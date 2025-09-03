@@ -1,0 +1,253 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// ================== Country ==================
+model Country {
+  id          String     @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  iso2        String     @unique
+  iso3        String     @unique
+  phoneCode   String?
+  currency    Currency   // Embedded type แทน relation
+  provinces   Province[]
+  cities      City[]
+  attractions Attraction[]
+  packages    Package[]
+  createdAt   DateTime?
+  updatedAt   DateTime?
+}
+
+// ================== Currency Embedded Type ==================
+type Currency {
+  code   String
+  name   String?
+  symbol String?
+}
+
+// ================== Province ==================
+model Province {
+  id          String      @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  country_id  String      @db.ObjectId
+  country     Country     @relation(fields: [country_id], references: [id])
+  cities      City[]
+  attractions Attraction[]
+  createdAt   DateTime?
+  updatedAt   DateTime?
+}
+
+// ================== City ==================
+model City {
+  id          String      @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  province_id String      @db.ObjectId
+  province    Province    @relation(fields: [province_id], references: [id])
+  country_id  String      @db.ObjectId
+  country     Country     @relation(fields: [country_id], references: [id])
+  location    Location?
+  attractions Attraction[]
+  packages    Package[]
+  createdAt   DateTime?
+  updatedAt   DateTime?
+}
+
+// ================== Location Embedded Type ==================
+type Location {
+  type        String
+  coordinates Float[]
+}
+
+// ================== Attraction ==================
+model Attraction {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  description String?
+  city_id     String    @db.ObjectId
+  city        City      @relation(fields: [city_id], references: [id])
+  province_id String    @db.ObjectId
+  province    Province  @relation(fields: [province_id], references: [id])
+  country_id  String    @db.ObjectId
+  country     Country   @relation(fields: [country_id], references: [id])
+  location    Location?
+  categories  String[]
+  images      String[]
+  ratingAvg   Float?
+  ratingCount Int?
+  isActive    Boolean?
+  createdAt   DateTime?
+  updatedAt   DateTime?
+}
+
+// ================== Package ==================
+model Package {
+  id             String      @id @default(auto()) @map("_id") @db.ObjectId
+  name           String
+  code           String      @unique
+  description    String?
+  durationDays   Int
+  startCity_id   String?     @db.ObjectId
+  startCity      City?       @relation(fields: [startCity_id], references: [id])
+  country_id     String?     @db.ObjectId
+  country        Country?    @relation(fields: [country_id], references: [id])
+  baseCurrency   String
+  priceAdult     Float
+  priceChild     Float?
+  images         String[]
+  itinerary      Itinerary[]
+  availableDates DateTime[]
+  tags           String[]
+  ratingAvg      Float?
+  ratingCount    Int?
+  isActive       Boolean
+  bookings       Booking[]
+  createdAt      DateTime?
+  updatedAt      DateTime?
+}
+
+// ================== Itinerary Embedded Type ==================
+type Itinerary {
+  day         Int
+  title       String
+  detail      String?
+  attractions String[] // ObjectId strings
+}
+
+// ================== User ==================
+model User {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  uuid          String    @unique @default(uuid())
+  name          String
+  email         String    @unique
+  phone         String?   @unique
+  role          String    @default("customer")
+  passwordHash  String?
+  passport      Passport?
+  addresses     Address[]
+  loyaltyPoints Int       @default(0)
+  bookings      Booking[]
+  reviews       Review[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// ================== Passport Embedded Type ==================
+type Passport {
+  number      String?
+  nationality String?
+  expiryDate  DateTime?
+}
+
+// ================== Address Embedded Type ==================
+type Address {
+  label    String?
+  line1    String?
+  city     String?
+  province String?
+  country  String?
+  zip      String?
+}
+
+// ================== Booking ==================
+model Booking {
+  id           String        @id @default(auto()) @map("_id") @db.ObjectId
+  bookingNo    String        @unique
+  user_id      String        @db.ObjectId  // ตรงกับ MongoDB collection
+  user         User          @relation(fields: [user_id], references: [id])
+  status       String
+  travelWindow TravelWindow?
+  travelers    Traveler[]
+  items        BookingItem[]
+  currency     String
+  amounts      Amounts
+  payment      Payment?
+  notes        String?
+  package_id   String?       @db.ObjectId
+  package      Package?      @relation(fields: [package_id], references: [id])
+  createdAt    DateTime?
+  updatedAt    DateTime?
+}
+
+// ================== TravelWindow Embedded Type ==================
+type TravelWindow {
+  startDate DateTime?
+  endDate   DateTime?
+}
+
+// ================== Traveler Embedded Type ==================
+type Traveler {
+  type       String
+  firstName  String?
+  lastName   String?
+  dob        DateTime?
+  passportNo String?
+}
+
+// ================== BookingItem Embedded Type ==================
+type BookingItem {
+  package_id  String  @db.ObjectId
+  title       String
+  qtyAdults   Int
+  qtyChildren Int?
+  priceAdult  Float
+  priceChild  Float?
+  options     Option[]
+  subtotal    Float?
+}
+
+// ================== Option Embedded Type ==================
+type Option {
+  name  String?
+  price Float?
+}
+
+// ================== Amounts Embedded Type ==================
+type Amounts {
+  itemsTotal Float
+  discount   Float
+  tax        Float
+  fee        Float
+  grandTotal Float
+}
+
+// ================== Payment Embedded Type ==================
+type Payment {
+  method       String?
+  status       String?
+  paidAt       DateTime?
+  transactions Transaction[]
+}
+
+// ================== Transaction Embedded Type ==================
+type Transaction {
+  ref    String?
+  amount Float?
+  at     DateTime?
+}
+
+// ================== Review ==================
+model Review {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  user_id   String    @db.ObjectId  // เปลี่ยนจาก userId เป็น user_id ให้ตรงกับ MongoDB
+  user      User      @relation(fields: [user_id], references: [id])
+  rating    Int
+  comment   String?
+  photos    String[]
+  target    Target
+  createdAt DateTime?
+  updatedAt DateTime?
+}
+
+// ================== Target Embedded Type ==================
+type Target {
+  type String
+  id   String  @db.ObjectId
+}
