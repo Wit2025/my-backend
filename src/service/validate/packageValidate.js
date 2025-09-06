@@ -25,13 +25,6 @@ export const ValidateDataPackage = async (data) => {
     errors.push("baseCurrency must be a string");
   }
 
-  // priceAdult
-  if (data.priceAdult === undefined) {
-    errors.push("priceAdult is required");
-  } else if (typeof data.priceAdult !== "number") {
-    errors.push("priceAdult must be a number");
-  }
-
   // durationDays
   if (data.durationDays === undefined) {
     errors.push("durationDays is required");
@@ -44,6 +37,29 @@ export const ValidateDataPackage = async (data) => {
     errors.push("isActive is required");
   } else if (typeof data.isActive !== "boolean") {
     errors.push("isActive must be boolean");
+  }
+
+  // scheduledDepartures
+  if (!data.scheduledDepartures || !Array.isArray(data.scheduledDepartures)) {
+    errors.push("scheduledDepartures is required and must be an array");
+  } else if (data.scheduledDepartures.length === 0) {
+    errors.push("At least one scheduled departure is required");
+  } else {
+    data.scheduledDepartures.forEach((departure, index) => {
+      if (!departure.departureDate) {
+        errors.push(`departureDate is required for departure at index ${index}`);
+      }
+      if (!departure.returnDate) {
+        errors.push(`returnDate is required for departure at index ${index}`);
+      }
+      if (departure.departureDate && departure.returnDate && 
+          new Date(departure.departureDate) >= new Date(departure.returnDate)) {
+        errors.push(`returnDate must be after departureDate for departure at index ${index}`);
+      }
+      if (!departure.availableSlots || departure.availableSlots <= 0) {
+        errors.push(`availableSlots must be greater than 0 for departure at index ${index}`);
+      }
+    });
   }
 
   return errors;
@@ -71,12 +87,6 @@ export const ValidateUpdatePackage = async (data) => {
     }
   }
 
-  if (data.priceAdult !== undefined) {
-    if (typeof data.priceAdult !== "number") {
-      errors.push("priceAdult must be a number");
-    }
-  }
-
   if (data.durationDays !== undefined) {
     if (!Number.isInteger(data.durationDays)) {
       errors.push("durationDays must be an integer");
@@ -86,6 +96,28 @@ export const ValidateUpdatePackage = async (data) => {
   if (data.isActive !== undefined) {
     if (typeof data.isActive !== "boolean") {
       errors.push("isActive must be boolean");
+    }
+  }
+
+  if (data.scheduledDepartures !== undefined) {
+    if (!Array.isArray(data.scheduledDepartures)) {
+      errors.push("scheduledDepartures must be an array");
+    } else {
+      data.scheduledDepartures.forEach((departure, index) => {
+        if (!departure.departureDate) {
+          errors.push(`departureDate is required for departure at index ${index}`);
+        }
+        if (!departure.returnDate) {
+          errors.push(`returnDate is required for departure at index ${index}`);
+        }
+        if (departure.departureDate && departure.returnDate && 
+            new Date(departure.departureDate) >= new Date(departure.returnDate)) {
+          errors.push(`returnDate must be after departureDate for departure at index ${index}`);
+        }
+        if (!departure.availableSlots || departure.availableSlots <= 0) {
+          errors.push(`availableSlots must be greater than 0 for departure at index ${index}`);
+        }
+      });
     }
   }
 

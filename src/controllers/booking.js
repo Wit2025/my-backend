@@ -9,22 +9,18 @@ import {
 
 // collection async function
 const bookingsCollection = async () => (await getDB()).collection("bookings");
-// const usersCollection = async () => (await getDB()).collection("users");
-// const packagesCollection = async () => (await getDB()).collection("packages");
 
 export default class BookingController {
-
-  
   // ============================สร้าง Booking ใหม่================================================
   static async Create(req, res) {
     try {
-      // Generate booking number ก่อนทำ validation
+      // Generate booking number
       const bookingNo = `BK${Date.now()}${Math.random()
         .toString(36)
         .substr(2, 5)
         .toUpperCase()}`;
 
-      // สร้าง object สำหรับ validation โดยรวม bookingNo เข้าไป
+      // สร้าง object สำหรับ validation
       const validationData = {
         ...req.body,
         bookingNo,
@@ -52,39 +48,55 @@ export default class BookingController {
           return SendError(res, 404, `Package not found: ${packageId}`);
         }
 
-        // ตรวจสอบว่า package มี field maxTravelers หรือไม่
-        if (!packageData.maxTravelers) {
-          continue; // ถ้าไม่มี maxTravelers ให้ข้ามไป
+        // ตรวจสอบ scheduled departure ที่เลือก
+        const selectedDeparture = req.body.selectedDeparture;
+        if (!selectedDeparture) {
+          return SendError(res, 400, "selectedDeparture is required");
         }
 
-        // นับ booking ที่ active สำหรับ package นี้
-        const activeBookings = await bookingsCollection.countDocuments({
-          "items.package_id": new ObjectId(packageId),
-          status: { $in: ["confirmed", "paid", "completed"] },
-        });
+        // หา scheduled departure ที่ตรงกับวันที่เลือก
+        const matchedDeparture = packageData.scheduledDepartures.find(
+          (dep) =>
+            dep.departureDate.toISOString() ===
+              new Date(selectedDeparture.departureDate).toISOString() &&
+            dep.returnDate.toISOString() ===
+              new Date(selectedDeparture.returnDate).toISOString()
+        );
 
-        // ตรวจสอบจำนวน travelers ที่ต้องการจอง
+        if (!matchedDeparture) {
+          return SendError(
+            res,
+            400,
+            "Selected departure date not available for this package"
+          );
+        }
+
+        // ตรวจสอบ available slots
+        const availableSlots =
+          matchedDeparture.availableSlots - matchedDeparture.bookedSlots;
         const requestedTravelers =
           (item.qtyAdults || 0) + (item.qtyChildren || 0);
-        const availableSlots = packageData.maxTravelers - activeBookings;
 
-        // ตรวจสอบว่าเหลือที่พอหรือไม่
         if (availableSlots <= 0) {
-          return SendError(res, 400, `Package "${packageData.name}" is sold out`);
+          return SendError(
+            res,
+            400,
+            `Package "${packageData.name}" is sold out for selected dates`
+          );
         }
 
         if (requestedTravelers > availableSlots) {
           return SendError(
             res,
             400,
-            `Only ${availableSlots} slots available for "${packageData.name}". 
+            `Only ${availableSlots} slots available for "${packageData.name}" on selected dates. 
            You requested ${requestedTravelers} travelers.`
           );
         }
       }
       // ==================== จบการตรวจสอบ Sold Out ====================
 
-      // สร้าง helper functions สำหรับคำนวณภายใน method นี้
+      // สร้าง helper functions
       const calculateItemSubtotal = (item) => {
         const adultTotal = (item.qtyAdults || 0) * (item.priceAdult || 0);
         const childTotal = (item.qtyChildren || 0) * (item.priceChild || 0);
@@ -92,7 +104,6 @@ export default class BookingController {
           (sum, option) => sum + (option.price || 0),
           0
         );
-
         return adultTotal + childTotal + optionsTotal;
       };
 
@@ -101,7 +112,6 @@ export default class BookingController {
           (sum, item) => sum + calculateItemSubtotal(item),
           0
         );
-
         return {
           itemsTotal,
           discount: existingAmounts.discount || 0,
@@ -118,17 +128,18 @@ export default class BookingController {
       // ฟังก์ชันสำหรับแปลง string เป็น Date object
       const parseDateFields = (obj) => {
         if (!obj) return obj;
-
         const result = { ...obj };
 
-        // แปลง field ที่เป็น date string เป็น Date object
-        if (result.travelWindow) {
-          result.travelWindow = {
-            startDate: new Date(result.travelWindow.startDate),
-            endDate: new Date(result.travelWindow.endDate),
+        // แปลง selectedDeparture dates
+        if (result.selectedDeparture) {
+          result.selectedDeparture = {
+            ...result.selectedDeparture,
+            departureDate: new Date(result.selectedDeparture.departureDate),
+            returnDate: new Date(result.selectedDeparture.returnDate),
           };
         }
 
+        // แปลง travelers dob
         if (result.travelers && Array.isArray(result.travelers)) {
           result.travelers = result.travelers.map((traveler) => ({
             ...traveler,
@@ -165,10 +176,43 @@ export default class BookingController {
 
       if (!result.insertedId) return SendError(res, 500, EMessage.ErrInsert);
 
+      // อัปเดต bookedSlots ใน package
+      await this.updatePackageBookedSlots(booking);
+
       return SendCreate(res, SMessage.Create, booking);
     } catch (err) {
       console.error("Create booking error:", err);
       return SendError(res, 500, EMessage.ServerInternal, err);
+    }
+  }
+
+  // ============================อัปเดต bookedSlots ใน package====================================
+  static async updatePackageBookedSlots(booking) {
+    try {
+      const packagesCollection = await (await getDB()).collection("packages");
+
+      for (const item of booking.items) {
+        const packageId = item.package_id;
+        const selectedDeparture = booking.selectedDeparture;
+        const totalTravelers = (item.qtyAdults || 0) + (item.qtyChildren || 0);
+
+        // อัปเดต bookedSlots ใน scheduledDepartures
+        await packagesCollection.updateOne(
+          {
+            _id: new ObjectId(packageId),
+            "scheduledDepartures.departureDate":
+              selectedDeparture.departureDate,
+            "scheduledDepartures.returnDate": selectedDeparture.returnDate,
+          },
+          {
+            $inc: {
+              "scheduledDepartures.$.bookedSlots": totalTravelers,
+            },
+          }
+        );
+      }
+    } catch (error) {
+      console.error("Error updating package booked slots:", error);
     }
   }
 
@@ -437,7 +481,7 @@ export default class BookingController {
     }
   }
 
-  // ============================อัปเดต Booking แบบรวมทั้งหมด================================================
+  // ============================อัปเดต Booking================================================
   static async Update(req, res) {
     try {
       const bookingId = req.params.bookingID;
@@ -481,13 +525,16 @@ export default class BookingController {
         if (!obj) return obj;
         const result = { ...obj };
 
-        if (result.travelWindow) {
-          result.travelWindow = {
-            startDate: new Date(result.travelWindow.startDate),
-            endDate: new Date(result.travelWindow.endDate),
+        // แปลง selectedDeparture dates
+        if (result.selectedDeparture) {
+          result.selectedDeparture = {
+            ...result.selectedDeparture,
+            departureDate: new Date(result.selectedDeparture.departureDate),
+            returnDate: new Date(result.selectedDeparture.returnDate),
           };
         }
 
+        // แปลง travelers dob
         if (result.travelers && Array.isArray(result.travelers)) {
           result.travelers = result.travelers.map((traveler) => ({
             ...traveler,
@@ -498,7 +545,7 @@ export default class BookingController {
         return result;
       };
 
-      // ดึงข้อมูล booking ปัจจุบันเพื่อเปรียบเทียบ
+      // ดึงข้อมูล booking ปัจจุบัน
       const collection = await bookingsCollection();
       const currentBooking = await collection.findOne({
         _id: new ObjectId(bookingId),
@@ -530,8 +577,8 @@ export default class BookingController {
         updateData.currency = processedData.currency;
       }
 
-      if (processedData.travelWindow !== undefined) {
-        updateData.travelWindow = processedData.travelWindow;
+      if (processedData.selectedDeparture !== undefined) {
+        updateData.selectedDeparture = processedData.selectedDeparture;
       }
 
       if (processedData.travelers !== undefined) {
@@ -545,7 +592,7 @@ export default class BookingController {
         updateData.notes = processedData.notes;
       }
 
-      // อัปเดต items และ amounts ถ้ามีการเปลี่ยนแปลง
+      // อัปเดต items และ amounts
       if (processedData.items !== undefined) {
         const updatedItems = processedData.items.map((item) => ({
           ...item,
@@ -559,7 +606,6 @@ export default class BookingController {
           processedData.amounts || currentBooking.amounts
         );
       } else if (processedData.amounts !== undefined) {
-        // อัปเดตเฉพาะ amounts ถ้า items ไม่เปลี่ยนแปลง
         const currentItems = currentBooking.items || [];
         updateData.amounts = calculateAmounts(
           currentItems,
@@ -567,14 +613,13 @@ export default class BookingController {
         );
       }
 
-      // อัปเดต payment data ถ้ามี
+      // อัปเดต payment data
       if (processedData.payment !== undefined) {
         updateData.payment = {
           ...currentBooking.payment,
           ...processedData.payment,
         };
 
-        // จัดการ transaction พิเศษสำหรับการชำระเงิน
         if (
           processedData.payment.status === "paid" &&
           processedData.payment.amount
@@ -591,9 +636,7 @@ export default class BookingController {
         }
       }
 
-      // ถ้าไม่มี field ใดๆ ที่เปลี่ยนแปลง
       if (Object.keys(updateData).length === 1) {
-        // มีแค่ updatedAt
         return SendError(res, 400, "No changes detected");
       }
 
@@ -617,7 +660,7 @@ export default class BookingController {
     }
   }
 
-  // ============================อัปเดต Booking แบบรวมทั้งหมด================================================
+  // ============================ลบ Booking================================================
   static async Delete(req, res) {
     try {
       const bookingId = req.params.bookingID;

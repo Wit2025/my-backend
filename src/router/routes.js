@@ -87,6 +87,7 @@ router.get(`${pkg}/mostPopular`, auth, PackageController.MostPopular);
 router.get(`${pkg}/leastPopular`, auth, PackageController.LeastPopular);
 router.get(`${pkg}/active`, auth, PackageController.ActivePackages);
 router.get(`${pkg}/country/:countryID`, auth, PackageController.PackagesByCountry);
+router.get(`${pkg}/byDepartureDate`, auth, PackageController.PackagesByDepartureDate);
 
 // Booking Routes
 const booking = "/booking";

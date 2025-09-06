@@ -10,14 +10,14 @@ import {
 const packagesCollection = async () => (await getDB()).collection("packages");
 
 export default class PackageController {
-  // สร้างแพ็กเกจใหม่
+  // =========================== create package====================================
   static async Create(req, res) {
     try {
       const validate = await ValidateDataPackage(req.body);
       if (validate.length > 0)
         return SendError(res, 400, EMessage.BadRequest + validate.join("/"));
 
-      const { startCity_id, cities = [], country_id, province_id } = req.body;
+      const { startCity_id, country_id, scheduledDepartures = [] } = req.body;
 
       const db = await getDB();
 
@@ -27,28 +27,27 @@ export default class PackageController {
         .findOne({ _id: new ObjectId(startCity_id) });
       if (!startCity) return SendError(res, 400, "startCity_id not found");
 
-      // ตรวจสอบทุกเมืองใน cities
-      for (const cityId of cities) {
-        if (!ObjectId.isValid(cityId))
-          return SendError(res, 400, `Invalid city id: ${cityId}`);
-        const city = await db
-          .collection("cities")
-          .findOne({ _id: new ObjectId(cityId) });
-        if (!city) return SendError(res, 400, `City not found: ${cityId}`);
-      }
-
       // ตรวจสอบประเทศ
       const country = await db
         .collection("countries")
         .findOne({ _id: new ObjectId(country_id) });
       if (!country) return SendError(res, 400, "country_id not found");
 
-      // ตรวจสอบจังหวัดถ้ามี
-      if (province_id) {
-        const province = await db
-          .collection("provinces")
-          .findOne({ _id: new ObjectId(province_id) });
-        if (!province) return SendError(res, 400, "province_id not found");
+      // ตรวจสอบ scheduledDepartures
+      if (scheduledDepartures.length === 0) {
+        return SendError(res, 400, "At least one scheduled departure is required");
+      }
+
+      for (const departure of scheduledDepartures) {
+        if (!departure.departureDate || !departure.returnDate) {
+          return SendError(res, 400, "Departure and return dates are required for each scheduled departure");
+        }
+        if (departure.departureDate >= departure.returnDate) {
+          return SendError(res, 400, "Return date must be after departure date");
+        }
+        if (!departure.availableSlots || departure.availableSlots <= 0) {
+          return SendError(res, 400, "Available slots must be greater than 0");
+        }
       }
 
       // ถ้าผ่านทั้งหมด ก็ insert
@@ -56,7 +55,13 @@ export default class PackageController {
         ...req.body,
         startCity_id: new ObjectId(req.body.startCity_id),
         country_id: new ObjectId(req.body.country_id),
-        cities: req.body.cities.map((id) => new ObjectId(id)), // ถ้ามีหลายเมือง
+        scheduledDepartures: req.body.scheduledDepartures.map(departure => ({
+          ...departure,
+          departureDate: new Date(departure.departureDate),
+          returnDate: new Date(departure.returnDate),
+          bookedSlots: departure.bookedSlots || 0,
+          status: departure.status || "available"
+        })),
         createdAt: new Date(),
         updatedAt: new Date(),
       };
@@ -72,7 +77,8 @@ export default class PackageController {
     }
   }
 
-  // ดึงข้อมูลทั้งหมด
+  
+  // =========================== ดึงข้อมูลทั้งหมด ====================================
   static async SelectAll(req, res) {
     try {
       const collection = await packagesCollection();
@@ -80,14 +86,28 @@ export default class PackageController {
 
       if (!packages || packages.length === 0)
         return SendError(res, 404, EMessage.NotFound, "packages");
-      return SendSuccess(res, SMessage.SelectAll, packages);
+      
+      // คำนวณ availability สำหรับแต่ละ departure
+      const packagesWithAvailability = packages.map(pkg => ({
+        ...pkg,
+        scheduledDepartures: pkg.scheduledDepartures.map(departure => ({
+          ...departure,
+          availableSlots: departure.availableSlots - departure.bookedSlots,
+          isAvailable: (departure.availableSlots - departure.bookedSlots) > 0 && 
+                      departure.status === "available" &&
+                      new Date(departure.departureDate) > new Date()
+        }))
+      }));
+
+      return SendSuccess(res, SMessage.SelectAll, packagesWithAvailability);
     } catch (err) {
       console.error("SelectAll packages error:", err);
       return SendError(res, 500, EMessage.ServerInternal, err);
     }
   }
 
-  // ดึงข้อมูลแพ็กเกจโดย ID
+  
+  // =========================== ดึงข้อมูลแพ็กเกจโดย ID ====================================
   static async SelectOne(req, res) {
     try {
       const pkgId = req.params.packageID;
@@ -99,20 +119,16 @@ export default class PackageController {
 
       if (!pkg) return SendError(res, 404, EMessage.NotFound, "package");
 
-      // คำนวณ availability
-      const bookingsCollection = await (await getDB()).collection("bookings");
-      const currentBookings = await bookingsCollection.countDocuments({
-        "items.package_id": new ObjectId(pkgId),
-        status: { $in: ["confirmed", "paid", "completed"] },
-      });
-
+      // คำนวณ availability สำหรับแต่ละ departure
       const packageWithAvailability = {
         ...pkg,
-        availability: {
-          currentBookings,
-          availableSlots: pkg.maxTravelers - currentBookings,
-          isSoldOut: currentBookings >= pkg.maxTravelers,
-        },
+        scheduledDepartures: pkg.scheduledDepartures.map(departure => ({
+          ...departure,
+          availableSlots: departure.availableSlots - departure.bookedSlots,
+          isAvailable: (departure.availableSlots - departure.bookedSlots) > 0 && 
+                      departure.status === "available" &&
+                      new Date(departure.departureDate) > new Date()
+        }))
       };
 
       return SendSuccess(res, SMessage.SelectOne, packageWithAvailability);
@@ -122,7 +138,7 @@ export default class PackageController {
     }
   }
 
-  // อัปเดตแพ็กเกจ
+  // =========================== อัปเดตแพ็กเกจ ====================================
   static async Update(req, res) {
     try {
       const pkgId = req.params.packageID;
@@ -170,6 +186,10 @@ export default class PackageController {
             if (!Array.isArray(newValue)) return false;
             return JSON.stringify(newValue) !== JSON.stringify(oldValue);
 
+          case "date":
+            if (!(newValue instanceof Date)) return false;
+            return newValue.getTime() !== oldValue.getTime();
+
           default:
             return newValue !== oldValue;
         }
@@ -198,10 +218,7 @@ export default class PackageController {
 
       // ตรวจสอบ field ตัวเลข
       const numberFields = [
-        "priceAdult",
-        "priceChild",
         "durationDays",
-        "durationNights",
         "minTravelers",
         "maxTravelers",
       ];
@@ -263,58 +280,43 @@ export default class PackageController {
         }
       }
 
-      // ตรวจสอบ province_id
-      if (req.body.province_id !== undefined) {
-        if (req.body.province_id === null || req.body.province_id === "") {
-          // อนุญาตให้ลบ province_id
-          if (currentPackage.province_id !== null) {
-            updateData.province_id = null;
-            hasChanges = true;
+      // ตรวจสอบ scheduledDepartures
+      if (req.body.scheduledDepartures !== undefined) {
+        if (!Array.isArray(req.body.scheduledDepartures))
+          return SendError(res, 400, "scheduledDepartures must be an array");
+
+        // ตรวจสอบทุก departure
+        for (let i = 0; i < req.body.scheduledDepartures.length; i++) {
+          const departure = req.body.scheduledDepartures[i];
+          
+          if (!departure.departureDate || !departure.returnDate) {
+            return SendError(res, 400, `Departure and return dates are required for departure at index ${i}`);
           }
-        } else {
-          if (!ObjectId.isValid(req.body.province_id))
-            return SendError(res, 400, "Invalid province_id");
-
-          const province = await db
-            .collection("provinces")
-            .findOne({ _id: new ObjectId(req.body.province_id) });
-          if (!province) return SendError(res, 404, "Province not found");
-
-          const newProvinceIdStr = req.body.province_id;
-          const currentProvinceIdStr = currentPackage.province_id
-            ? currentPackage.province_id.toString()
-            : null;
-
-          if (newProvinceIdStr !== currentProvinceIdStr) {
-            updateData.province_id = new ObjectId(newProvinceIdStr);
-            hasChanges = true;
+          
+          if (new Date(departure.departureDate) >= new Date(departure.returnDate)) {
+            return SendError(res, 400, `Return date must be after departure date at index ${i}`);
+          }
+          
+          if (!departure.availableSlots || departure.availableSlots <= 0) {
+            return SendError(res, 400, `Available slots must be greater than 0 at index ${i}`);
           }
         }
-      }
 
-      // ตรวจสอบ cities array
-      if (req.body.cities !== undefined) {
-        if (!Array.isArray(req.body.cities))
-          return SendError(res, 400, "cities must be an array");
+        // แปลง dates และตั้งค่า default values
+        const newDepartures = req.body.scheduledDepartures.map(departure => ({
+          ...departure,
+          departureDate: new Date(departure.departureDate),
+          returnDate: new Date(departure.returnDate),
+          bookedSlots: departure.bookedSlots || 0,
+          status: departure.status || "available",
+          priceAdult: departure.priceAdult || currentPackage.priceAdult,
+          priceChild: departure.priceChild || currentPackage.priceChild
+        }));
 
-        // ตรวจสอบทุกเมืองใน cities
-        for (let i = 0; i < req.body.cities.length; i++) {
-          const cityId = req.body.cities[i];
-          if (!ObjectId.isValid(cityId))
-            return SendError(res, 400, `Invalid city ID at index ${i}`);
+        const currentDepartures = currentPackage.scheduledDepartures || [];
 
-          const city = await db
-            .collection("cities")
-            .findOne({ _id: new ObjectId(cityId) });
-          if (!city) return SendError(res, 404, `City not found at index ${i}`);
-        }
-
-        // แปลงเป็น ObjectId และตรวจสอบการเปลี่ยนแปลง
-        const newCities = req.body.cities.map((id) => new ObjectId(id));
-        const currentCities = currentPackage.cities || [];
-
-        if (JSON.stringify(newCities) !== JSON.stringify(currentCities)) {
-          updateData.cities = newCities;
+        if (JSON.stringify(newDepartures) !== JSON.stringify(currentDepartures)) {
+          updateData.scheduledDepartures = newDepartures;
           hasChanges = true;
         }
       }
@@ -340,7 +342,7 @@ export default class PackageController {
     }
   }
 
-  // ลบแพ็กเกจ
+  // =========================== ลบแพ็กเกจ ====================================
   static async Delete(req, res) {
     try {
       const pkgId = req.params.packageID;
@@ -359,7 +361,8 @@ export default class PackageController {
     }
   }
 
-  // ค้นหาแพ็กเกจ
+  
+  // =========================== ค้นหาแพ็กเกจ ====================================
   static async Search(req, res) {
     try {
       const { keyword } = req.query;
@@ -376,14 +379,15 @@ export default class PackageController {
       return SendError(res, 500, EMessage.ServerInternal, err);
     }
   }
-  // ดึงแพ็กเกจยอดนิยม (ตาม ratingCount หรือ ratingAvg)
+
+  // =========================== ดึงแพ็กเกจยอดนิยม ====================================
   static async MostPopular(req, res) {
     try {
-      const limit = parseInt(req.query.limit) || 5; // จำนวนสูงสุดที่ต้องการ
+      const limit = parseInt(req.query.limit) || 5;
       const collection = await packagesCollection();
       const packages = await collection
         .find({})
-        .sort({ ratingCount: -1, ratingAvg: -1 }) // เรียงตามจำนวนรีวิว และคะแนนเฉลี่ย
+        .sort({ ratingCount: -1, ratingAvg: -1 })
         .limit(limit)
         .toArray();
 
@@ -394,14 +398,14 @@ export default class PackageController {
     }
   }
 
-  // ดึงแพ็กเกจไม่นิยมที่สุด (น้อยสุดตาม ratingCount หรือ ratingAvg)
+  // =========================== ดึงแพ็กเกจไม่นิยมที่สุด ====================================
   static async LeastPopular(req, res) {
     try {
       const limit = parseInt(req.query.limit) || 5;
       const collection = await packagesCollection();
       const packages = await collection
         .find({})
-        .sort({ ratingCount: 1, ratingAvg: 1 }) // เรียงจากน้อยสุด
+        .sort({ ratingCount: 1, ratingAvg: 1 })
         .limit(limit)
         .toArray();
 
@@ -412,7 +416,7 @@ export default class PackageController {
     }
   }
 
-  // ดึงแพ็กเกจที่ active
+  // =========================== ดึงแพ็กเกจที่ active ====================================
   static async ActivePackages(req, res) {
     try {
       const collection = await packagesCollection();
@@ -424,7 +428,7 @@ export default class PackageController {
     }
   }
 
-  // ดึงแพ็กเกจตามประเทศ
+  // =========================== ดึงแพ็กเกจตามประเทศ ====================================
   static async PackagesByCountry(req, res) {
     try {
       const countryId = req.params.countryID;
@@ -439,6 +443,33 @@ export default class PackageController {
       return SendSuccess(res, `Packages in country ${countryId}`, packages);
     } catch (err) {
       console.error("PackagesByCountry error:", err);
+      return SendError(res, 500, EMessage.ServerInternal, err);
+    }
+  }
+
+  // =========================== ดึงแพ็กเกจตามวันที่เดินทาง ====================================
+  static async PackagesByDepartureDate(req, res) {
+    try {
+      const { date } = req.query;
+      if (!date) return SendError(res, 400, "Date parameter is required");
+
+      const targetDate = new Date(date);
+      if (isNaN(targetDate.getTime())) {
+        return SendError(res, 400, "Invalid date format");
+      }
+
+      const collection = await packagesCollection();
+      const packages = await collection
+        .find({
+          "scheduledDepartures.departureDate": targetDate,
+          "scheduledDepartures.status": "available",
+          isActive: true
+        })
+        .toArray();
+
+      return SendSuccess(res, `Packages departing on ${date}`, packages);
+    } catch (err) {
+      console.error("PackagesByDepartureDate error:", err);
       return SendError(res, 500, EMessage.ServerInternal, err);
     }
   }
